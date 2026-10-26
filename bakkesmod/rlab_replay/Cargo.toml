@@ -1,0 +1,17 @@
+[package]
+name = "rlab_replay"
+version = "0.1.0"
+edition = "2021"
+description = "Reads Rocket League .replay files for the Replay Lab BakkesMod plugin (C ABI)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+subtr-actor = "=1.5.1"
+boxcars = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

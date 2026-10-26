@@ -1,0 +1,4 @@
+# Cross-compile the Windows DLL on Linux: lld-link + Microsoft libraries fetched by xwin (../toolchain/msvc);
+# build.sh gives the library folders (CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: absolute paths of this clone).
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"

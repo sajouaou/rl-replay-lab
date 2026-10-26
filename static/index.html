@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Labo replays Rocket League</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Saira+Condensed:wght@600;700&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="importmap">{ "imports": { "three": "/static/vendor/three.module.js" } }</script>
+</head>
+<body>
+  <canvas id="view"></canvas>
+
+  <header id="top">
+    <div class="pick">
+      <label for="replaySel">Replay</label>
+      <select id="replaySel"><option>Chargement de la liste…</option></select>
+      <span id="status" role="status"></span>
+    </div>
+    <div id="board" aria-label="Score">
+      <span class="sc blue" id="scBlue">0</span>
+      <span id="clock">5:00</span>
+      <span class="sc orange" id="scOrange">0</span>
+    </div>
+    <div class="right">
+      <span id="syncBadge" class="badge" hidden></span>
+      <span id="modeBadge" class="badge">Replay</span>
+      <button id="panelToggle" type="button" aria-expanded="true" aria-controls="panel">Panneau</button>
+    </div>
+  </header>
+
+  <aside id="panel">
+    <section>
+      <h2>Et si…</h2>
+      <p class="hint">Mets le replay en pause au bon moment, choisis le rôle de chaque voiture, puis lance la simulation. Le réel continue en transparence pour comparer.</p>
+      <p class="hint">Le ballon suit exactement le replay tant qu'aucune voiture modifiée ne s'en approche. Il devient simulé à ce moment-là (trait rose clair sur la ligne de temps), ou dès que tu le modifies.</p>
+      <div id="players"></div>
+      <button id="forkBtn" class="primary" type="button" disabled>Simuler à partir d'ici</button>
+      <div id="simBtns" class="row" hidden>
+        <button id="simPause" type="button">Pause</button>
+        <button id="simReset" type="button">Recommencer</button>
+        <button id="simBack" type="button">Retour au replay</button>
+      </div>
+    </section>
+
+    <section id="savesBox">
+      <h2>Arrêts</h2>
+      <p class="hint" id="savesSummary">Choisis un replay.</p>
+      <div id="savesList"></div>
+    </section>
+
+    <section id="ballBox" hidden>
+      <h2>Ballon</h2>
+      <div class="grid3">
+        <span></span><span class="ax">x</span><span class="ax">y</span><span class="ax">z</span>
+        <span class="lab">Position</span>
+        <input id="bx" type="number" step="10"><input id="by" type="number" step="10"><input id="bz" type="number" step="10">
+        <span class="lab">Vitesse</span>
+        <input id="bvx" type="number" step="50"><input id="bvy" type="number" step="50"><input id="bvz" type="number" step="50">
+      </div>
+      <div class="row">
+        <button id="ballApply" type="button">Appliquer</button>
+        <button id="ballPlace" type="button">Placer au clic</button>
+      </div>
+      <div class="row">
+        <button id="ballStop" type="button">Arrêter</button>
+        <button id="ballSlow" type="button">Vitesse ×0,5</button>
+        <button id="ballFast" type="button">Vitesse ×1,5</button>
+      </div>
+      <p class="hint">Unités du jeu (uu). Le terrain fait 8192 × 10240, le but 643 de haut. Vitesse max du ballon : 6000.</p>
+    </section>
+
+    <section>
+      <h2>Caméra</h2>
+      <div class="row">
+        <select id="camSel" aria-label="Caméra">
+          <option value="free">Libre (souris)</option>
+          <option value="ballcam">Caméra balle</option>
+          <option value="carcam">Derrière la voiture</option>
+          <option value="top">Vue de dessus</option>
+        </select>
+        <label for="followBall"><input type="checkbox" id="followBall" checked> suivre le ballon</label>
+      </div>
+      <p class="hint" id="camHint"></p>
+    </section>
+
+    <section>
+      <h2>Affichage</h2>
+      <label for="showReal"><input type="checkbox" id="showReal" checked> Le réel en transparence</label>
+      <label for="showPred"><input type="checkbox" id="showPred" checked> Trajectoire prédite du ballon</label>
+      <label for="showNames"><input type="checkbox" id="showNames" checked> Noms des joueurs</label>
+      <label for="showSaves"><input type="checkbox" id="showSaves" checked> Arrêts sur le terrain</label>
+    </section>
+
+    <section id="driveHelp">
+      <h2>Conduire</h2>
+      <dl class="keys">
+        <dt>Z / S</dt><dd>accélérer / reculer, piquer / cabrer en l'air</dd>
+        <dt>Q / D</dt><dd>tourner</dd>
+        <dt>Espace</dt><dd>sauter (deux fois : flip)</dd>
+        <dt>Maj</dt><dd>boost</dd>
+        <dt>Ctrl</dt><dd>dérapage, air roll en l'air</dd>
+        <dt>A / E</dt><dd>air roll gauche / droite</dd>
+        <dt>Manette</dt><dd>RT/LT gaz, A saut, B boost, X dérapage</dd>
+      </dl>
+    </section>
+  </aside>
+
+  <footer id="bottom">
+    <button id="playBtn" type="button" disabled>Lecture</button>
+    <div class="tl">
+      <input type="range" id="timeline" min="0" max="1" step="0.01" value="0" aria-label="Moment du replay" disabled>
+      <div id="marks"></div>
+    </div>
+    <span id="tlabel">–</span>
+    <label for="speedSel">Vitesse
+      <select id="speedSel"><option value="0.25">0,25×</option><option value="0.5" selected>0,5×</option><option value="1">1×</option></select>
+    </label>
+  </footer>
+
+  <div id="boostMeter" hidden><span id="boostVal">0</span><small>boost</small></div>
+  <div id="banner" hidden></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

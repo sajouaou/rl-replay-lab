@@ -1,0 +1,15 @@
+# environnements, caches, compilations
+.venv/
+cache/
+__pycache__/
+*.pyc
+bakkesmod/build/
+bakkesmod/build_*/
+bakkesmod/dist/
+bakkesmod/imgui_src/
+bakkesmod/rlab_replay/target/
+# en-têtes et bibliothèques Microsoft (xwin) : licence Microsoft, à télécharger soi-même
+bakkesmod/toolchain/
+# vidéo : autorisation de partage d'écran (personnelle) et rushes
+bakkesmod/video/.jeton
+bakkesmod/video/rushes/
