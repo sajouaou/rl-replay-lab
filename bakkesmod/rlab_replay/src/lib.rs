@@ -23,15 +23,32 @@
 //!          then each player's camera: u8 known; if known: f32 fov, height, angle, distance, stiffness, swivel, transition,
 //!          u32 ball cam changes, each (f32 time, u8 on)
 //! version 4: each player's frame also has u8 moves after boosting: 1 jumping, 2 double jumping, 4 dodging
+//! version 5, how the match goes, to play it like the game:
+//!          each player's frame also has u8 throttle, u8 steer after moves (0-255, 128: none; the wheels turn like his),
+//!          and moves 8: powersliding
+//!          then each frame: u8 phase (0 other, 1 kickoff countdown, 2 playing, 3 goal: from its explosion to the next kickoff),
+//!          u8 kickoff countdown number shown (3, 2, 1; 0 otherwise)
+//!          i32 x2 score when the replay starts (a match joined late)
+//!          each goal (same order as above): u8 scorer, u8 assist (player index, 255: none)
+//!          u32 demolitions: u32 frame, u8 victim, u8 attacker (255: unknown)
+//!          A demolished car is left out of the frames (no rigid body) from its demolition until it is back: the replay
+//!          keeps it hidden and asleep where it blew up.
+//! version 6, the boost pads: u32 events, each f32 x, f32 y (the pad), f32 time, u8 1 picked up / 0 back
 //! ```
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr};
 use std::panic;
 
 use boxcars::{ActorId, Attribute, HeaderProp, ParserBuilder, ProductValue, RigidBody};
-use subtr_actor::{BallFrame, PlayerFrame, PlayerStatEventKind, ReplayDataCollector};
+use subtr_actor::{BallFrame, PlayerFrame, PlayerId, PlayerStatEventKind, ReplayDataCollector};
 
-const VERSION: u32 = 4;
+const VERSION: u32 = 6;
+
+// the match phase of a frame
+pub const PHASE_OTHER: u8 = 0;       // waiting for players...
+pub const PHASE_COUNTDOWN: u8 = 1;   // the kickoff countdown: cars on their spots
+pub const PHASE_PLAYING: u8 = 2;
+pub const PHASE_GOAL: u8 = 3;        // from a goal's explosion to the next kickoff (its replay in the game: a hole in time)
 
 struct Blob(Vec<u8>);
 
@@ -185,6 +202,37 @@ pub fn ball_archetype(replay: &boxcars::Replay) -> String {
         .cloned().unwrap_or_default()
 }
 
+/// Each network frame's match phase and kickoff countdown number (3, 2, 1, else 0), from the game event's replicated state.
+pub fn phases(replay: &boxcars::Replay) -> Vec<(u8, u8)> {
+    let Some(frames) = replay.network_frames.as_ref() else { return Vec::new() };
+    let name_of = |id: boxcars::ObjectId| replay.objects.get(id.0 as usize).map(String::as_str).unwrap_or("");
+    let (mut phase, mut count) = (PHASE_OTHER, 0u8);
+    frames.frames.iter().map(|frame| {
+        let was = phase;
+        let mut counted = false;
+        for ua in &frame.updated_actors {
+            match (name_of(ua.object_id), &ua.attribute) {
+                // an index in the replay's names: the same state has another number in another replay
+                ("TAGame.GameEvent_TA:ReplicatedStateName", Attribute::Int(i)) => {
+                    phase = match replay.names.get(*i as usize).map(String::as_str) {
+                        Some("Countdown") => PHASE_COUNTDOWN,
+                        Some("Active") => PHASE_PLAYING,
+                        Some("PostGoalScored" | "ReplayPlayback") => PHASE_GOAL,
+                        _ => PHASE_OTHER,
+                    };
+                }
+                ("TAGame.GameEvent_TA:ReplicatedRoundCountDownNumber", Attribute::Int(n)) => {
+                    count = (*n).clamp(0, 9) as u8;
+                    counted = true;
+                }
+                _ => {}
+            }
+        }
+        if phase == PHASE_COUNTDOWN && was != PHASE_COUNTDOWN && !counted { count = 0; }   // not the last kickoff's "1"
+        (phase, if phase == PHASE_COUNTDOWN { count } else { 0 })
+    }).collect()
+}
+
 /// The looks as text, for checking a replay by hand.
 pub fn looks_text(path: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("lecture de {path}: {e}"))?;
@@ -229,6 +277,20 @@ fn parse(path: &str) -> Result<Vec<u8>, String> {
         }
     }
 
+    let index_of = |id: &PlayerId| players.iter().position(|(p, ..)| p == id);
+    // a demolished car stays in the replay, hidden and asleep where it blew up, until it comes back (about 3 s): not on
+    // the pitch meanwhile
+    let mut away = vec![vec![false; n]; players.len()];
+    for dm in &data.demolish_infos {
+        let Some(k) = index_of(&dm.victim) else { continue };
+        for i in dm.frame..n {
+            match players[k].3.frames().get(i) {
+                Some(PlayerFrame::Data { rigid_body, .. }) if rigid_body.sleeping => away[k][i] = true,
+                _ => break,
+            }
+        }
+    }
+
     let mut b = Blob(Vec::with_capacity(64 + n * (60 + players.len() * 64)));
     b.0.extend_from_slice(b"RLAB");
     b.u32(VERSION);
@@ -248,19 +310,20 @@ fn parse(path: &str) -> Result<Vec<u8>, String> {
             Some(BallFrame::Data { rigid_body }) => b.body(Some(rigid_body)),
             _ => b.body(None),
         }
-        for (_, _, _, pd) in &players {
+        for (k, (_, _, _, pd)) in players.iter().enumerate() {
             match pd.frames().get(i) {
-                Some(PlayerFrame::Data { rigid_body, boost_amount, boost_active, jump_active, double_jump_active, dodge_active, .. }) => {
+                Some(PlayerFrame::Data { rigid_body, boost_amount, boost_active, jump_active, double_jump_active, dodge_active,
+                                         powerslide_active, input, .. }) if !away[k][i] => {
                     b.body(Some(rigid_body));
                     b.u8(boost_amount.clamp(0.0, 255.0) as u8);
                     b.u8(*boost_active as u8);
-                    b.u8(*jump_active as u8 | (*double_jump_active as u8) << 1 | (*dodge_active as u8) << 2);
+                    b.u8(*jump_active as u8 | (*double_jump_active as u8) << 1 | (*dodge_active as u8) << 2 | (*powerslide_active as u8) << 3);
+                    b.u8(input.throttle.unwrap_or(128));
+                    b.u8(input.steer.unwrap_or(128));
                 }
                 _ => {
                     b.body(None);
-                    b.u8(0);
-                    b.u8(0);
-                    b.u8(0);
+                    for v in [0, 0, 0, 128, 128] { b.u8(v); }
                 }
             }
         }
@@ -314,6 +377,49 @@ fn parse(path: &str) -> Result<Vec<u8>, String> {
             _ => b.u8(0),
         }
     }
+
+    let phases = phases(&replay);
+    for i in 0..n {
+        let (phase, count) = phases.get(i).copied().unwrap_or((PHASE_OTHER, 0));
+        b.u8(phase);
+        b.u8(count);
+    }
+    // the score when the replay starts (a match joined late): the replay records a team's score when that team scores,
+    // so from its first goal; a team that does not score in it, from the final score
+    for team0 in [true, false] {
+        let goals: Vec<_> = data.goal_events.iter().filter(|g| g.scoring_team_is_team_0 == team0).collect();
+        let first = goals.first().and_then(|g| if team0 { g.team_zero_score } else { g.team_one_score });
+        let last = header_str(&replay, if team0 { "Team0Score" } else { "Team1Score" }).parse().unwrap_or(goals.len() as i32);
+        b.i32(first.map_or(last - goals.len() as i32, |s| s - 1).max(0));
+    }
+    let who = |k: Option<usize>| k.map_or(255, |k| k as u8);
+    for g in &data.goal_events {
+        // the assist is counted a few frames after the goal
+        let assist = data.player_stat_events.iter()
+            .filter(|e| matches!(e.kind, PlayerStatEventKind::Assist) && e.is_team_0 == g.scoring_team_is_team_0)
+            .find(|e| e.frame >= g.frame && e.frame <= g.frame + 60)
+            .and_then(|e| index_of(&e.player));
+        b.u8(who(g.player.as_ref().and_then(|p| index_of(p))));
+        b.u8(who(assist));
+    }
+    b.u32(data.demolish_infos.len() as u32);
+    for dm in &data.demolish_infos {
+        b.u32(dm.frame as u32);
+        b.u8(who(index_of(&dm.victim)));
+        b.u8(who(index_of(&dm.attacker)));
+    }
+    // the boost pads: when each was taken and came back, where it is (to find it in the game)
+    let pads: Vec<_> = data.boost_pad_events.iter().filter_map(|e| {
+        let pad = data.boost_pads.iter().find(|p| p.pad_id.as_deref() == Some(e.pad_id.as_str()))?;
+        Some((pad.position, e.time, matches!(e.kind, subtr_actor::BoostPadEventKind::PickedUp { .. })))
+    }).collect();
+    b.u32(pads.len() as u32);
+    for (at, time, taken) in pads {
+        b.f32(at.x);
+        b.f32(at.y);
+        b.f32(time);
+        b.u8(taken as u8);
+    }
     Ok(b.0)
 }
 
@@ -322,8 +428,9 @@ fn header(path: &str) -> Result<Vec<u8>, String> {
     let replay = ParserBuilder::new(&bytes).never_parse_network_data().on_error_check_crc().parse()
         .map_err(|e| format!("replay illisible: {e}"))?;
     let mut out = String::new();
-    for key in ["MapName", "Date", "TeamSize", "Team0Score", "Team1Score"] {
-        out += &format!("{key}={}\n", header_str(&replay, key));
+    // ReplayName: the name given to the replay in the game when saving it (none for a replay saved automatically)
+    for key in ["MapName", "Date", "TeamSize", "Team0Score", "Team1Score", "ReplayName"] {
+        out += &format!("{key}={}\n", header_str(&replay, key).replace(['\n', '\r'], " "));
     }
     if let Some((_, HeaderProp::Array(stats))) = replay.properties.iter().find(|(k, _)| k == "PlayerStats") {
         for player in stats {

@@ -2,13 +2,13 @@
 
     /usr/bin/python3 video/ecran.py sortie.mkv
 
-Prints ENREGISTRE when the first frames come, stops cleanly on SIGINT or SIGTERM. The first time, KDE asks which
-screen to share; the answer is kept (video/.jeton) and not asked again.
+Nothing is kept until it is told so: frames go through a closed valve. On its standard input, "go" opens it (the
+caller makes sure only the game is on screen), "stop" (or the end of the input, SIGINT, SIGTERM) ends the file.
+Prints PRET when frames come (valve still closed), ENREGISTRE when the first frame is kept. The first time, KDE asks
+which screen to share; the answer is kept (video/.jeton).
 (System Python: it needs GStreamer's bindings, gi.)
 """
-import json
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -59,45 +59,44 @@ class Portal:
         if TOKEN.exists():
             options["restore_token"] = GLib.Variant("s", TOKEN.read_text().strip())
         self.request("SelectSources", ("o", session), options)
+        asked = time.time()
         started = self.request("Start", ("os", session, ""), {})
+        # a quick answer: the screen chosen last time, without asking (a slow one: KDE asked)
+        print(f"partage d'ecran: {time.time() - asked:.1f} s, jeton {'reutilise' if 'restore_token' in options else 'absent'}, "
+              f"flux {started['streams']}", file=sys.stderr, flush=True)
         if "restore_token" in started:
             TOKEN.write_text(started["restore_token"])
-        node = started["streams"][0][0]
+        node, props = started["streams"][0]
         result, fds = self.bus.call_with_unix_fd_list_sync(
             PORTAL, DESKTOP, "org.freedesktop.portal.ScreenCast", "OpenPipeWireRemote",
             GLib.Variant("(oa{sv})", (session, {})), GLib.VariantType("(h)"), 0, -1, None, None)
-        return fds.get(result.unpack()[0]), node
+        return fds.get(result.unpack()[0]), props.get("pipewire-serial", node)
 
 
 def main():
     out = Path(sys.argv[1])
     Gst.init(None)
-    fd, node = Portal().start()
-    # PipeWire 1.x finds a stream by its serial, not its id (and KWin's is an output stream: not taken by default)
-    serial = None
-    for _ in range(30):   # the stream shows up a moment after the portal answers
-        found = [o for o in json.loads(subprocess.run(["pw-dump"], capture_output=True, text=True).stdout or "[]") if o.get("id") == node]
-        if found and "object.serial" in found[0].get("info", {}).get("props", {}):
-            serial = found[0]["info"]["props"]["object.serial"]
-            break
-        time.sleep(0.1)
-    if serial is None:
-        sys.exit(f"flux d'ecran {node} introuvable dans PipeWire")
+    # PipeWire 1.x finds a stream by its serial (the portal gives it); KWin's is an output stream, not taken by default
+    fd, serial = Portal().start()
     pipeline = Gst.parse_launch(
         f"pipewiresrc fd={fd} target-object={serial} do-timestamp=true keepalive-time=1000 always-copy=true "
-        "! videorate ! video/x-raw,framerate=60/1 ! videoconvert ! video/x-raw,format=NV12 "
+        "! videorate ! video/x-raw,framerate=60/1 ! videoconvert ! video/x-raw,format=NV12 ! valve name=valve drop=true "
         "! nvh264enc name=enc preset=hq rc-mode=vbr bitrate=24000 max-bitrate=40000 gop-size=120 "
         f"! h264parse ! matroskamux ! filesink location=\"{out}\"")
     loop = GLib.MainLoop()
-    first = {"seen": False}
+    said = set()
 
-    def on_frame(_pad, _info):
-        if not first["seen"]:
-            first["seen"] = True
-            print("ENREGISTRE", flush=True)
-        return Gst.PadProbeReturn.OK
+    def say_once(word):
+        def probe(_pad, _info):
+            if word not in said:
+                said.add(word)
+                print(word, flush=True)
+            return Gst.PadProbeReturn.OK
+        return probe
 
-    pipeline.get_by_name("enc").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, on_frame)
+    valve = pipeline.get_by_name("valve")
+    valve.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, say_once("PRET"))
+    pipeline.get_by_name("enc").get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, say_once("ENREGISTRE"))
 
     def on_message(_bus, message):
         if message.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR):
@@ -113,6 +112,15 @@ def main():
         pipeline.send_event(Gst.Event.new_eos())   # the file gets its end: playable
         return GLib.SOURCE_REMOVE
 
+    def on_input(source, _condition):
+        line = source.readline()
+        if line.strip() == "go":
+            valve.set_property("drop", False)
+            return True
+        stop()
+        return False
+
+    GLib.io_add_watch(GLib.IOChannel.unix_new(sys.stdin.fileno()), GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, on_input)
     signal.signal(signal.SIGINT, lambda *_: GLib.idle_add(stop))
     signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(stop))
     pipeline.set_state(Gst.State.PLAYING)

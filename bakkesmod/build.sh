@@ -24,7 +24,7 @@ clang-cl --target=x86_64-pc-windows-msvc /nologo /std:c++17 /EHsc /MD /O2 /utf-8
     -Wno-unused-command-line-argument -Wno-ignored-pragmas -Wno-microsoft-template \
     /imsvc "$MSVC/crt/include" /imsvc "$MSVC/sdk/include/ucrt" /imsvc "$MSVC/sdk/include/um" /imsvc "$MSVC/sdk/include/shared" \
     /I "$SDK/include" /I imgui_src /I nexto \
-    ReplayLab/ReplayLab.cpp ReplayLab/Camera.cpp ReplayLab/Scenario.cpp build/nexto.obj imgui_src/imgui/imgui.cpp imgui_src/imgui/imgui_draw.cpp \
+    ReplayLab/*.cpp build/nexto.obj imgui_src/imgui/imgui.cpp imgui_src/imgui/imgui_draw.cpp \
     imgui_src/imgui/imgui_widgets.cpp imgui_src/imgui/imgui_demo.cpp /Fobuild/ /Febuild/ReplayLab.dll \
     -fuse-ld=lld-link /link /LIBPATH:"$MSVC/crt/lib/x86_64" /LIBPATH:"$MSVC/sdk/lib/um/x86_64" \
     /LIBPATH:"$MSVC/sdk/lib/ucrt/x86_64" "$SDK/lib/pluginsdk.lib" /MAP:build/ReplayLab.map

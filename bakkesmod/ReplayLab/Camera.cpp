@@ -79,7 +79,7 @@ void ReplayLab::NextCamMode() {
     std::lock_guard<std::recursive_mutex> lock(mtx);
     camMode = (camMode + 1) % CAM_COUNT;
     ballCamManual = -1;
-    if (replay && CarPlayer() >= 0) camTarget = CarPlayer();
+    if (replay && ToiIndex() >= 0) camTarget = ToiIndex();
     camShotStart = std::chrono::steady_clock::now();
     if (camMode == CAM_FREE) {   // starts where the camera is
         CameraWrapper cam = gameWrapper->GetCamera();
@@ -173,7 +173,9 @@ bool ReplayLab::BallCamOn() const {
 void ReplayLab::ToggleBallCam(bool byYou) {
     CarWrapper car = Followed();
     CarWrapper local = gameWrapper->GetLocalCar();
-    if (car.IsNull() || car.memory_address == local.memory_address || !FindBallCamFlag(car)) {
+    // the car you drive takes your own ball cam (UpdateCamera): yours is switched
+    const bool yours = Driving() && !car.IsNull() && CarOf(ToiIndex()).memory_address == car.memory_address;
+    if (yours || car.IsNull() || car.memory_address == local.memory_address || !FindBallCamFlag(car)) {
         PlayerControllerWrapper pc = gameWrapper->GetPlayerController();
         if (pc.IsNull()) return;
         pc.PressSecondaryCamera();
@@ -188,12 +190,13 @@ void ReplayLab::ToggleBallCam(bool byYou) {
 }
 
 // The game's camera takes the settings of the player whose car it follows (in a bot's: Psyonix's defaults), so a
-// player's view has his own settings when his bot has them, as in the replay viewer; yours when the replay has none.
+// player's view has his own settings when his bot has them, as in the replay viewer; yours when the replay has none, and
+// on the car you drive.
 void ReplayLab::CameraSettings(ServerWrapper sw) {
     CarWrapper local = gameWrapper->GetLocalCar();
     if (local.IsNull() || local.GetPRI().IsNull()) return;
     const ProfileCameraSettings yours = local.GetPRI().GetCameraSettings();
-    const bool his = cvarManager->getCvar("rlab_cam_joueur").getBoolValue();
+    const bool his = *opt.camJoueur;
     auto same = [](const ProfileCameraSettings& a, const ProfileCameraSettings& b) {
         return a.FOV == b.FOV && a.Height == b.Height && a.Pitch == b.Pitch && a.Distance == b.Distance && a.Stiffness == b.Stiffness &&
                a.SwivelSpeed == b.SwivelSpeed && a.TransitionSpeed == b.TransitionSpeed;
@@ -203,8 +206,10 @@ void ReplayLab::CameraSettings(ServerWrapper sw) {
         CarWrapper car = cars.Get(i);
         if (car.IsNull() || car.memory_address == local.memory_address || car.GetPRI().IsNull()) continue;
         const int k = BotIndex(car);
+        // the car you drive: your own camera, as in a game
+        const bool driven = k >= 0 && k == ToiIndex() && !ownCar;
         const ProfileCameraSettings want =
-            his && k >= 0 && k < static_cast<int>(replay->cams.size()) && replay->cams[k].known ? replay->cams[k].settings : yours;
+            his && !driven && k >= 0 && k < static_cast<int>(replay->cams.size()) && replay->cams[k].known ? replay->cams[k].settings : yours;
         if (!same(car.GetPRI().GetCameraSettings(), want)) car.GetPRI().SetCameraSettings(want);
     }
 }
@@ -216,7 +221,7 @@ void ReplayLab::UpdateCamera() {
     camLast = now;
     ServerWrapper sw = gameWrapper->GetGameEventAsServer();
     if (sw.IsNull() || !replay || mode == MODE_IDLE) return;
-    if (std::chrono::duration<float>(now - camSettingsCheck).count() > 0.5f) {
+    if (std::chrono::duration<float>(now - camSettingsCheck).count() > (Driving() ? 0.1f : 0.5f)) {
         camSettingsCheck = now;
         CameraSettings(sw);
     }
@@ -246,8 +251,13 @@ void ReplayLab::UpdateCamera() {
             if (!BallCamOn()) ToggleBallCam(false);
         }
     }
+    // the player's car you drive: your ball cam button, as in a game (the game switches it on your own car's camera)
+    if (Driving() && ShownMode() == CAM_PLAYER && camTarget == ToiIndex()) {
+        CarWrapper mine = gameWrapper->GetLocalCar(), his = CarOf(ToiIndex());
+        if (!mine.IsNull() && !his.IsNull() && FindBallCamFlag(mine)) SetBallCamOf(his, BallCamOf(mine));
+    }
     // like the replay viewer: a player's view switches ball cam when he switched it
-    const bool his = ShownMode() == CAM_PLAYER && camTarget != CarPlayer() && cvarManager->getCvar("rlab_cam_joueur").getBoolValue() &&
+    const bool his = ShownMode() == CAM_PLAYER && camTarget != CarPlayer() && !(mode == MODE_SIM && camTarget == ToiIndex()) && *opt.camJoueur &&
                      camTarget < static_cast<int>(replay->cams.size()) && replay->cams[camTarget].known;
     if (his && ballCamManual != camTarget) SetBallCamOf(CarOf(camTarget), replay->cams[camTarget].BallCamAt(Now()));
     if (ShownMode() != CAM_FREE) {
@@ -264,7 +274,7 @@ void ReplayLab::UpdateCamera() {
     if (dolly.GetbCollideActors()) dolly.SetbCollideActors(0);
     if (dolly.GetbBlockActors()) dolly.SetbBlockActors(0);
     // flown with your controller (read while it drives no car)
-    const ControllerInput& in = camInput;
+    const ControllerInput in = Pad();
     freeRot.Yaw += static_cast<int>(in.Steer * 100.f * DEG * dt);
     const Axes ax = AxesOf(freeRot);
     const float speed = (in.ActivateBoost || in.HoldingBoost) ? 3200.f : 1100.f;

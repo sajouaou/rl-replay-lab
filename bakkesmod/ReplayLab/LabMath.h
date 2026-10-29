@@ -1,5 +1,5 @@
 #pragma once
-// Small vector and rotation helpers shared by the plugin's files (game units, Unreal rotators).
+// Small vector and rotation helpers shared by the plugin's files (game units, Unreal rotators), and a car's player.
 
 #include "bakkesmod/wrappers/includes.h"
 
@@ -19,6 +19,7 @@ inline Vector Mul(const Vector& a, float s) { return Vector(a.X * s, a.Y * s, a.
 inline Vector Lerp(const Vector& a, const Vector& b, float k) { return Add(a, Mul(Sub(b, a), k)); }
 inline float Dot(const Vector& a, const Vector& b) { return a.X * b.X + a.Y * b.Y + a.Z * b.Z; }
 inline float Len(const Vector& a) { return std::sqrt(Dot(a, a)); }
+inline float Kmh(const Vector& velocity) { return Len(velocity) * 0.036f; }   // game units per second -> km/h
 
 struct Axes {
     Vector f, r, u;
@@ -79,5 +80,7 @@ inline std::string NameOf(CarWrapper car) {
     PriWrapper pri = car.GetPRI();
     return pri.IsNull() ? std::string() : pri.GetPlayerName().ToString();
 }
+
+inline bool Same(ObjectWrapper a, ObjectWrapper b) { return a.memory_address == b.memory_address; }
 
 }  // namespace lab
